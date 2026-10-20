@@ -1,0 +1,5 @@
+sku,name,category,stock_quantity,unit_price
+SKU-9001,Premium Desk Mat,Accessories,50,$25.00
+SKU-9001,Premium Desk Mat Duplicate,Accessories,20,$25.00
+SKU-9002,Defective Web Camera,Electronics,-5,$60.00
+SKU-9003,Broken Cable Organizer,Accessories,15,FREE

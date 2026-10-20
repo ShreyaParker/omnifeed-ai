@@ -1,0 +1,190 @@
+# OmniFeed AI — Technical Implementation, Architecture & Operations Handbook
+
+**Project:** OmniFeed AI — Intelligent Inventory Ingestion, Validation & Analytics Platform  
+**Environment:** Python 3.13 | FastAPI 0.115+ | SQLAlchemy 2.0 | PostgreSQL (Supabase Pooler) | Streamlit 1.40+ | Plotly 5.24+ | Google Gemini AI | Pytest 8.0+  
+
+---
+
+## 1. Project Directory Structure
+
+```
+d:/internwork/omnifeed/
+├── .env                          # Real environment credentials (DATABASE_URL, GEMINI_API_KEY, etc.)
+├── .env.example                  # Sanitized template for environment configuration
+├── .gitignore                    # Excludes .venv, __pycache__, .env, *.pyc, .pytest_cache
+├── requirements.txt              # Core project dependencies pinned
+├── prd.txt                       # Synchronized Product Requirements Document
+├── working.txt                   # Complete technical handbook & execution log
+│
+├── docs/                         # Formal Architectural & Project Documentation
+│   ├── PRD.md                    # Formal Product Requirements Document
+│   ├── ARCHITECTURE.md           # System Architecture & Sequence Flows (Mermaid)
+│   ├── DESIGN.md                 # Database Design (ERD), Normalization & UI/UX Design
+│   └── ROADMAP.md                # 4-Phase Product Evolution Roadmap
+│
+├── app/                          # FastAPI Backend Application
+│   ├── __init__.py               # Package initializer
+│   ├── config.py                 # Pydantic Settings & environment caching
+│   ├── database.py               # SQLAlchemy 2.0 models & connection management
+│   ├── main.py                   # FastAPI REST API endpoints & lifespan handler
+│   ├── parsers/                  # Multi-Format File Parsers
+│   │   ├── __init__.py           # Exports BaseParser, CSVParser, JSONParser, XMLParser
+│   │   ├── base.py               # Abstract BaseParser class
+│   │   ├── csv_parser.py         # CSVParser using io.TextIOWrapper (utf-8-sig)
+│   │   ├── json_parser.py        # JSONParser (top-level arrays & {"items": [...]})
+│   │   └── xml_parser.py         # XMLParser using defusedxml (<items><item>)
+│   └── services/                 # Core Business Logic
+│       ├── __init__.py           # Package initializer
+│       ├── ai_service.py         # Google Gemini 1.5 Flash client & rule-based engine
+│       └── ingestion.py          # clean_string, parse_price, normalize_record, ingest_records
+│
+├── dashboard/                    # Streamlit Presentation Layer
+│   ├── __init__.py               # Package initializer
+│   ├── api_client.py             # HTTP communication wrapper (get, post, upload)
+│   └── streamlit_app.py          # Wide interactive UI (KPIs, Plotly, Uploader, Explorer, AI)
+│
+├── sample_data/                  # Test & Demonstration Datasets
+│   ├── sample.csv                # 5 items across Electronics, Furniture, Stationery
+│   ├── sample.json               # 3 items under "items" root key
+│   ├── sample.xml                # 2 items under <items><item> XML tags
+│   └── invalid_sample.csv        # Edge case test: 1 valid, 1 duplicate, 1 negative stock, 1 bad price
+│
+└── tests/                        # Automated Pytest Suite (30/30 Tests Passing)
+    ├── __init__.py               # Package initializer
+    ├── test_ai_service.py        # Tests for Gemini AI & deterministic fallback
+    ├── test_api.py               # Integration tests for all FastAPI REST endpoints
+    ├── test_dashboard_client.py  # Tests for Streamlit API client HTTP helpers
+    ├── test_ingestion.py         # Tests for transactional upsert & duplicate SKU detection
+    └── test_parsers.py           # Tests for CSV, JSON, XML parsers, parse_price, normalize_record
+```
+
+---
+
+## 2. System Architecture & Component Design
+
+### 2.1 Multi-Format ETL Parser Engine
+- **`BaseParser`**: Abstract class defining `parse(content: bytes) -> Iterator[dict[str, Any]]`.
+- **`CSVParser`**: Employs `io.TextIOWrapper` with `utf-8-sig` to safely strip Byte Order Marks (BOMs) from Windows/Excel exports. Validates header row existence.
+- **`JSONParser`**: Normalizes top-level lists as well as object payloads containing an `"items"` array key. Yields row-level dictionaries.
+- **`XMLParser`**: Employs `defusedxml.ElementTree` to parse `<items><item>` structures, preventing XML entity expansion and external resource injection attacks.
+
+### 2.2 Data Ingestion & Transaction Logic
+- **`clean_string(val)`**: Trims leading and trailing whitespace; safely returns empty string on `None`.
+- **`parse_price(val)`**: Strips currency symbols (`$`, `€`, `INR`, `USD`) and comma thousands separators. Validates positive amount (`> 0`), at most 2 decimal places, and supported ceiling. Quantizes to `Decimal("0.01")`.
+- **`normalize_record(row)`**: Validates mandatory `sku` (≤ 64), `name` (≤ 255), and `category` (≤ 50). Verifies `stock_quantity >= 0` and integer type. Normalizes price using `parse_price`.
+- **`ingest_records(db, records, filename, file_type)`**:
+  - Encloses entire file processing within a single atomic database transaction.
+  - Detects and rejects intra-file duplicate SKUs using an in-memory set.
+  - Auto-creates and caches categories on the fly to eliminate redundant queries.
+  - Idempotent upsert matching on `InventoryItem.sku`: existing items update name, category, stock, and price; new items are inserted.
+  - Captures per-row validation errors with line numbers, SKU, and error message without aborting valid rows.
+  - Saves audit trail records in `ingestion_jobs` and row errors in `ingestion_errors`.
+  - Returns a detailed summary dictionary (`status`, `records_processed`, `records_inserted`, `records_updated`, `records_failed`, `errors`).
+
+### 2.3 Operations Intelligence & Google Gemini AI
+- **Official SDK:** Uses `from google import genai` and `google.genai.types.GenerateContentConfig`.
+- **Model:** Configured via `GEMINI_MODEL=gemini-1.5-flash`.
+- **System Instructions:** Instructs model to act as an inventory operations analyst restricted to supplied facts.
+- **Structured JSON Mode:** Enforces `response_mime_type="application/json"` to return `{ "source": "gemini", "summary": str, "recommendations": list[str] }`.
+- **Deterministic Rules Engine Fallback:** If `GEMINI_API_KEY` is missing or an API error occurs, automatically executes `_rule_based_insights`, analyzing low-stock and out-of-stock figures to produce deterministic operational recommendations.
+
+### 2.4 Cloud Database Architecture (Supabase Pooler)
+- **Host:** `aws-0-ap-south-1.pooler.supabase.com:5432` (Session mode supporting prepared statements and DDL).
+- **Driver:** `postgresql+psycopg://` via `psycopg` v3 binary.
+- **Connection Pool:** `pool_pre_ping=True`, `pool_size=5`, `max_overflow=5`.
+- **Lifespan Hook:** Starts Uvicorn without crashing if cloud pooler exhibits cold-start connection latency.
+
+### 2.5 Streamlit Presentation Dashboard
+- Wide-screen responsive layout with custom CSS tokens and glassmorphism styling.
+- 4 real-time KPI metric cards (Total SKUs, Valuation formatted in Indian Rupee `₹`, Low Stock Count `<10`, Out of Stock Count `=0`).
+- Plotly bar chart visualizing inventory valuation across categories with rich hover tooltips.
+- Multi-format file uploader (`.csv`, `.json`, `.xml`) with metrics summary and validation error inspection table.
+- Searchable inventory explorer with category dropdown filter and customizable rows-per-page selector.
+- Operations intelligence card with dynamic source badge (`Google Gemini` vs `Rules Engine`), executive narrative summary, and operational recommendations.
+
+---
+
+## 3. Database Schema Reference
+
+```sql
+CREATE TABLE categories (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(50) UNIQUE NOT NULL
+);
+CREATE INDEX ix_categories_name ON categories (name);
+
+CREATE TABLE inventory_items (
+    id SERIAL PRIMARY KEY,
+    sku VARCHAR(64) UNIQUE NOT NULL,
+    name VARCHAR(255) NOT NULL,
+    category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
+    stock_quantity INTEGER NOT NULL CHECK (stock_quantity >= 0),
+    unit_price NUMERIC(10, 2) NOT NULL CHECK (unit_price > 0),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX ix_inventory_items_sku ON inventory_items (sku);
+CREATE INDEX ix_inventory_items_category_id ON inventory_items (category_id);
+
+CREATE TABLE ingestion_jobs (
+    id SERIAL PRIMARY KEY,
+    filename VARCHAR(255) NOT NULL,
+    file_type VARCHAR(10) NOT NULL,
+    status VARCHAR(40) NOT NULL,
+    records_processed INTEGER DEFAULT 0,
+    records_inserted INTEGER DEFAULT 0,
+    records_updated INTEGER DEFAULT 0,
+    records_failed INTEGER DEFAULT 0,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE ingestion_errors (
+    id SERIAL PRIMARY KEY,
+    job_id INTEGER REFERENCES ingestion_jobs(id) ON DELETE CASCADE,
+    row_number INTEGER,
+    sku VARCHAR(64),
+    error_code VARCHAR(50) NOT NULL,
+    error_message VARCHAR(500) NOT NULL,
+    raw_record VARCHAR(1000)
+);
+CREATE INDEX ix_ingestion_errors_job_id ON ingestion_errors (job_id);
+```
+
+---
+
+## 4. REST API Endpoint Reference
+
+| Method | Endpoint | Query / Body Parameters | Response Summary |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/health` | None | `{"status": "ok", "database": "connected"}` |
+| `POST`| `/api/v1/ingest` | Multipart file (CSV, JSON, XML) | Ingestion summary dict with counts and row errors |
+| `GET` | `/api/v1/items` | `page`, `limit`, `category`, `search`, `min_price`, `max_price` | Paginated list of inventory items with metadata |
+| `GET` | `/api/v1/items/{sku}` | Path: `sku` | Single product details or 404 |
+| `GET` | `/api/v1/analytics/overview` | None | Aggregate metrics (`total_skus`, `total_units`, `inventory_valuation`, `low_stock_items`, `out_of_stock_items`) |
+| `GET` | `/api/v1/analytics/categories` | None | Grouped category valuation and unit counts |
+| `GET` | `/api/v1/analytics/stock-alerts` | `threshold` (default: 10) | Products with stock below threshold |
+| `GET` | `/api/v1/ingestion/history` | None | List of recent ingestion jobs |
+| `POST`| `/api/v1/ai/insights` | None | Executive operations summary and recommendations |
+
+---
+
+## 5. Execution Runbook
+
+### Starting the FastAPI Server
+```powershell
+.\.venv\Scripts\uvicorn.exe app.main:app --reload --port 8000
+```
+- Interactive Swagger UI: `http://127.0.0.1:8000/docs`
+- ReDoc UI: `http://127.0.0.1:8000/redoc`
+
+### Starting the Streamlit Dashboard
+```powershell
+.\.venv\Scripts\streamlit.exe run dashboard/streamlit_app.py
+```
+- Browser access: `http://localhost:8501`
+
+### Running the Test Suite
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests -v
+```
+- Status: **30 passed in ~5s** (100% test pass rate)

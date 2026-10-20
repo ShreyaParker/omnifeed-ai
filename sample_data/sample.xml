@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<items>
+  <item>
+    <sku>SKU-3001</sku>
+    <name>Ultra-Wide 4K Monitor</name>
+    <category>Electronics</category>
+    <stock_quantity>12</stock_quantity>
+    <unit_price>$499.00</unit_price>
+  </item>
+  <item>
+    <sku>SKU-3002</sku>
+    <name>Adjustable Laptop Stand</name>
+    <category>Furniture</category>
+    <stock_quantity>35</stock_quantity>
+    <unit_price>42.50 USD</unit_price>
+  </item>
+</items>

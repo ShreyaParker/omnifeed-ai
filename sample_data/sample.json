@@ -1,0 +1,25 @@
+{
+  "items": [
+    {
+      "sku": "SKU-2001",
+      "name": "Noise Cancelling Headphones",
+      "category": "Electronics",
+      "stock_quantity": 25,
+      "unit_price": "$149.99"
+    },
+    {
+      "sku": "SKU-2002",
+      "name": "Solid Oak Bookshelf",
+      "category": "Furniture",
+      "stock_quantity": 5,
+      "unit_price": "299.50 INR"
+    },
+    {
+      "sku": "SKU-2003",
+      "name": "Gel Ink Pen Set",
+      "category": "Stationery",
+      "stock_quantity": 80,
+      "unit_price": "$15.00"
+    }
+  ]
+}

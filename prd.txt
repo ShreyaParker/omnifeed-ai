@@ -1,0 +1,95 @@
+# OmniFeed AI — Full Product Requirements Document (PRD)
+
+Intelligent Inventory Ingestion, Validation & Analytics Platform
+Stack: Python 3.13 | FastAPI | PostgreSQL (Supabase) | Streamlit | Plotly | Google Gemini AI | Pytest
+
+---
+
+## 1. Executive Summary & Problem Statement
+
+OmniFeed AI is a full-stack data engineering and analytics application that ingests supplier inventory files in CSV, JSON, and XML formats, validates and normalizes the data, upserts valid records into PostgreSQL, and presents inventory analytics through an interactive Streamlit dashboard. An AI assistant powered by Google Gemini (with deterministic rule-based fallback) explains data quality issues and generates prioritized operational recommendations.
+
+### Business Challenges Solved
+1. **Multi-format supplier fragmentation:** Retailers and wholesalers receive supplier files in inconsistent formats (.csv with BOM, .json, .xml).
+2. **Data dirtiness:** Unsanitized currency text ($12.50, 12.50 INR), negative stocks, whitespace, and invalid numbers cause silent corruption.
+3. **Duplicate SKUs:** Repeated entries cause inaccurate stock calculations and corrupt inventory valuations.
+4. **Lack of operational visibility:** Inventory managers lack instant visibility into low-stock items, total catalog valuation, and error tracking.
+
+---
+
+## 2. Product Objectives and Acceptance Criteria
+
+| Objective | Acceptance Criteria | Status |
+| :--- | :--- | :--- |
+| **Multi-format ETL** | Ingest CSV (`utf-8-sig`), JSON (arrays & `items` key), and XML (`defusedxml`). | Completed |
+| **Data Integrity** | Validate SKU, name, category, stock (non-negative integer), and positive price. | Completed |
+| **Idempotent Upsert** | Re-importing existing SKUs updates records without duplicates (`uq_inventory_sku`). | Completed |
+| **REST APIs** | FastAPI endpoints for ingestion, paginated catalog, analytics, health, and AI. | Completed |
+| **Interactive Dashboard** | Streamlit UI with 4 KPI cards in INR (₹), Plotly category valuation chart, file uploader, and explorer. | Completed |
+| **AI Operations Intelligence** | Google Gemini 1.5 Flash insights with automated deterministic rules fallback. | Completed |
+| **Automated Testing** | Complete test suite covering parsers, services, API endpoints, and dashboard client. | 30/30 Passed |
+
+---
+
+## 3. System Architecture & Components
+
+```
+OmniFeed AI
+├── Presentation Layer: Streamlit Dashboard (:8501) + Plotly + api_client
+├── Application Layer: FastAPI Application (:8000) + CORS + Lifespan + Endpoints
+├── ETL Engine: BaseParser, CSVParser, JSONParser, XMLParser, IngestionService
+├── Persistence Layer: SQLAlchemy 2.0 ORM + PostgreSQL (Supabase Pooler on Port 5432)
+└── Intelligence Layer: Google Gemini SDK (gemini-1.5-flash) + Deterministic Rules Engine
+```
+
+### End-to-End Data Pipeline
+1. **Upload:** User uploads file via Streamlit or `POST /api/v1/ingest`.
+2. **Bounded Read:** System verifies file size (<= 10MB) and parses stream in memory.
+3. **Normalization:** Trims whitespace, cleans currency labels/symbols, quantizes prices to 2 decimal places, validates non-negative integer stock.
+4. **Transaction:** Single atomic database transaction. Intra-file duplicate SKUs rejected. Categories auto-created and cached. Items upserted by SKU.
+5. **Audit Trail:** Ingestion job metrics and row-level errors persisted.
+6. **Visualization & AI:** Metrics displayed in dashboard; Gemini evaluates valuation and stock alerts to generate operational recommendations.
+
+---
+
+## 4. Database Design & Tables
+
+- **`categories`**: `id` (SERIAL, PK), `name` (VARCHAR(50), UNIQUE, INDEX).
+- **`inventory_items`**: `id` (SERIAL, PK), `sku` (VARCHAR(64), UNIQUE, INDEX), `name` (VARCHAR(255)), `category_id` (FK), `stock_quantity` (INTEGER, CHECK >= 0), `unit_price` (NUMERIC(10,2), CHECK > 0), `created_at` (TIMESTAMPTZ), `updated_at` (TIMESTAMPTZ).
+- **`ingestion_jobs`**: `id` (SERIAL, PK), `filename` (VARCHAR(255)), `file_type` (VARCHAR(10)), `status` (VARCHAR(40)), `records_processed` (INT), `records_inserted` (INT), `records_updated` (INT), `records_failed` (INT), `created_at` (TIMESTAMPTZ).
+- **`ingestion_errors`**: `id` (SERIAL, PK), `job_id` (FK), `row_number` (INT), `sku` (VARCHAR(64)), `error_code` (VARCHAR(50)), `error_message` (VARCHAR(500)), `raw_record` (VARCHAR(1000)).
+
+---
+
+## 5. REST API Specification
+
+- `GET /health`: Database connectivity check via `SELECT 1`.
+- `POST /api/v1/ingest`: Multipart file upload (CSV/JSON/XML) with transactional upsert.
+- `GET /api/v1/items`: Paginated items (`page`, `limit`, `category`, `search`, `min_price`, `max_price`).
+- `GET /api/v1/items/{sku}`: Single product lookup by SKU.
+- `GET /api/v1/analytics/overview`: High-level metrics (`total_skus`, `total_units`, `inventory_valuation`, `low_stock_items`, `out_of_stock_items`).
+- `GET /api/v1/analytics/categories`: Aggregated category valuation and unit counts via SQL `GROUP BY`.
+- `GET /api/v1/analytics/stock-alerts`: Low-stock products below threshold (default `< 10`).
+- `GET /api/v1/ingestion/history`: Ingestion job audit history.
+- `POST /api/v1/ai/insights`: Generates operations analysis using Gemini 1.5 Flash or deterministic rules.
+
+---
+
+## 6. How to Run Locally
+
+1. **Activate virtual environment:**
+   ```powershell
+   .\.venv\Scripts\Activate.ps1
+   ```
+2. **Start FastAPI Backend:**
+   ```powershell
+   .\.venv\Scripts\uvicorn.exe app.main:app --reload --port 8000
+   ```
+3. **Start Streamlit Dashboard:**
+   ```powershell
+   .\.venv\Scripts\streamlit.exe run dashboard/streamlit_app.py
+   ```
+4. **Run Test Suite:**
+   ```powershell
+   .\.venv\Scripts\python.exe -m pytest tests -v
+   ```
